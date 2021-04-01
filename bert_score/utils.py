@@ -192,6 +192,7 @@ def sent_encode(tokenizer, sent):
 
 
 def get_model(model_type, num_layers, all_layers=None):
+    print(f"Initializing model from : {model_type}")
     if model_type.startswith("scibert"):
         model = AutoModel.from_pretrained(cache_scibert(model_type))
     elif "t5" in model_type:
@@ -534,6 +535,101 @@ def bert_cos_score_idf(
             batch_hyps = hyps[batch_start : batch_start + batch_size]
             ref_stats = pad_batch_stats(batch_refs, stats_dict, device)
             hyp_stats = pad_batch_stats(batch_hyps, stats_dict, device)
+
+            P, R, F1 = greedy_cos_idf(*ref_stats, *hyp_stats, all_layers)
+            preds.append(torch.stack((P, R, F1), dim=-1).cpu())
+    preds = torch.cat(preds, dim=1 if all_layers else 0)
+    return preds
+
+def bert_cos_score_idf_two_model(
+    model_1, model_2, refs, hyps, tokenizer, idf_dict, verbose=False, batch_size=64, device="cuda:0", all_layers=False,
+):
+    """
+    Compute BERTScore.
+
+    Args:
+        - :param: `model` : a BERT model in `pytorch_pretrained_bert`
+        - :param: `refs` (list of str): reference sentences
+        - :param: `hyps` (list of str): candidate sentences
+        - :param: `tokenzier` : a BERT tokenizer corresponds to `model`
+        - :param: `idf_dict` : a dictionary mapping a word piece index to its
+                               inverse document frequency
+        - :param: `verbose` (bool): turn on intermediate status update
+        - :param: `batch_size` (int): bert score processing batch size
+        - :param: `device` (str): device to use, e.g. 'cpu' or 'cuda'
+    """
+    preds = []
+
+    # def dedup_and_sort(l):
+    #     return sorted(list(set(l)), key=lambda x: len(x.split(" ")), reverse=True)
+
+    # sentences = dedup_and_sort(refs + hyps)
+    embs = []
+    iter_range = range(0, len(hyps), batch_size)
+    if verbose:
+        print("computing bert embedding.")
+        iter_range = tqdm(iter_range)
+    h_stats_dict = dict()
+    r_stats_dict = dict()
+    for batch_start in iter_range:
+        # Hyp
+        sen_batch = hyps[batch_start : batch_start + batch_size]
+        h_embs, h_masks, h_padded_idf = get_bert_embedding(
+            sen_batch, model_1, tokenizer, idf_dict, device=device, all_layers=all_layers
+        )
+        h_embs = h_embs.cpu()
+        h_masks = h_masks.cpu()
+        h_padded_idf = h_padded_idf.cpu()
+        for i, sen in enumerate(sen_batch):
+            sequence_len = h_masks[i].sum().item()
+            emb = h_embs[i, :sequence_len]
+            idf = h_padded_idf[i, :sequence_len]
+            h_stats_dict[sen] = (emb, idf)
+
+        # Ref
+        sen_batch = refs[batch_start : batch_start + batch_size]
+        r_embs, r_masks, r_padded_idf = get_bert_embedding(
+            sen_batch, model_2, tokenizer, idf_dict, device=device, all_layers=all_layers
+        )
+        r_embs = r_embs.cpu()
+        r_masks = r_masks.cpu()
+        r_padded_idf = r_padded_idf.cpu()
+        for i, sen in enumerate(sen_batch):
+            sequence_len = r_masks[i].sum().item()
+            emb = r_embs[i, :sequence_len]
+            idf = r_padded_idf[i, :sequence_len]
+            r_stats_dict[sen] = (emb, idf)
+
+    def pad_batch_stats(sen_batch, stats_dict, device):
+        stats = [stats_dict[s] for s in sen_batch]
+        emb, idf = zip(*stats)
+        emb = [e.to(device) for e in emb]
+        idf = [i.to(device) for i in idf]
+        lens = [e.size(0) for e in emb]
+        emb_pad = pad_sequence(emb, batch_first=True, padding_value=2.0)
+        idf_pad = pad_sequence(idf, batch_first=True)
+
+        def length_to_mask(lens):
+            lens = torch.tensor(lens, dtype=torch.long)
+            max_len = max(lens)
+            base = torch.arange(max_len, dtype=torch.long).expand(len(lens), max_len)
+            return base < lens.unsqueeze(1)
+
+        pad_mask = length_to_mask(lens).to(device)
+        return emb_pad, pad_mask, idf_pad
+
+    device = next(model_1.parameters()).device
+    iter_range = range(0, len(refs), batch_size)
+    if verbose:
+        print("computing greedy matching.")
+        iter_range = tqdm(iter_range)
+
+    with torch.no_grad():
+        for batch_start in iter_range:
+            batch_refs = refs[batch_start : batch_start + batch_size]
+            batch_hyps = hyps[batch_start : batch_start + batch_size]
+            ref_stats = pad_batch_stats(batch_refs, r_stats_dict, device)
+            hyp_stats = pad_batch_stats(batch_hyps, h_stats_dict, device)
 
             P, R, F1 = greedy_cos_idf(*ref_stats, *hyp_stats, all_layers)
             preds.append(torch.stack((P, R, F1), dim=-1).cpu())

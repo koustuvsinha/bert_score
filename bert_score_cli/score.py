@@ -17,9 +17,12 @@ def main():
         help='two-letter abbreviation of the language (e.g., en) or "en-sci" for scientific text',
     )
     parser.add_argument(
-        "-m", "--model", default=None, help="BERT model name (default: bert-base-uncased) or path to a pretrain model",
+        "-m1", "--model_1", default=None, help="BERT model name (default: bert-base-uncased) or path to a pretrain model",
     )
-    parser.add_argument("-l", "--num_layers", type=int, default=None, help="use first N layer in BERT (default: 8)")
+    parser.add_argument(
+        "-m2", "--model_2", default=None, help="BERT model name (default: bert-base-uncased) or path to a pretrain model",
+    )
+    parser.add_argument("-l", "--num_layers", type=int, default=10, help="use first N layer in BERT (default: 10 for roberta-base)")
     parser.add_argument("-b", "--batch_size", type=int, default=64, help="batch size (default: 64)")
     parser.add_argument("--nthreads", type=int, default=4, help="number of cpu workers (default: 4)")
     parser.add_argument("--idf", action="store_true", help="BERT Score with IDF scaling")
@@ -55,10 +58,24 @@ def main():
         refs = [args.ref]
         assert not args.idf, "do not support idf mode for a single pair of sentences"
 
-    all_preds, hash_code = bert_score.score(
+    # all_preds, hash_code = bert_score.score(
+    #     cands,
+    #     refs,
+    #     model_type=args.model,
+    #     num_layers=args.num_layers,
+    #     verbose=args.verbose,
+    #     idf=args.idf,
+    #     batch_size=args.batch_size,
+    #     lang=args.lang,
+    #     return_hash=True,
+    #     rescale_with_baseline=args.rescale_with_baseline,
+    #     baseline_path=args.baseline_path,
+    # )
+    all_preds, hash_code = bert_score.score_with_two_models(
         cands,
         refs,
-        model_type=args.model,
+        model_type_1=args.model_1,
+        model_type_2=args.model_2,
         num_layers=args.num_layers,
         verbose=args.verbose,
         idf=args.idf,
